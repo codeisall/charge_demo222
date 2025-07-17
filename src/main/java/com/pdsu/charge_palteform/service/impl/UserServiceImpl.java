@@ -11,6 +11,7 @@ import com.pdsu.charge_palteform.entity.dto.LoginResponse;
 import com.pdsu.charge_palteform.entity.dto.UpdateUserRequest;
 import com.pdsu.charge_palteform.exception.BusinessException;
 import com.pdsu.charge_palteform.mapper.UserMapper;
+import com.pdsu.charge_palteform.service.CouponService;
 import com.pdsu.charge_palteform.service.UserService;
 import com.pdsu.charge_palteform.utils.JwtUtil;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +28,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     private final WxMaService wxMaService;
     private final JwtUtil jwtUtil;
+    private final CouponService couponService;
 
     @Override
     @Transactional
@@ -38,15 +40,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
             String openid = sessionInfo.getOpenid();
             String unionid = sessionInfo.getUnionid();
-
             if (openid == null) {
                 throw new BusinessException("微信登录失败，请重试");
             }
-
             // 2. 查询用户是否存在
             User user = getUserByOpenid(openid);
             boolean isNewUser = false;
-
             if (user == null) {
                 // 3. 新用户注册
                 user = new User();
@@ -56,9 +55,15 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
                 user.setAvatarUrl(request.getAvatarUrl());
                 user.setBalance(BigDecimal.ZERO);
                 user.setStatus(1);
-
                 save(user);
                 isNewUser = true;
+                try {
+                    couponService.issueRegistrationCoupon(user.getId());
+                    log.info("新用户注册优惠券发放成功");
+                } catch (Exception e) {
+                    log.error("新用户注册优惠券发放失败", e);
+                    // 不影响注册流程
+                }
                 log.info("新用户注册成功, openid: {}", openid);
             } else {
                 // 4. 老用户更新信息
@@ -71,10 +76,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
                 updateById(user);
                 log.info("用户信息更新成功, userId: {}", user.getId());
             }
-
             // 5. 生成JWT token
             String token = jwtUtil.generateToken(user.getId(), openid);
-
             // 6. 构建响应
             LoginResponse response = new LoginResponse();
             response.setToken(token);
@@ -84,10 +87,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
             response.setPhone(user.getPhone());
             response.setBalance(user.getBalance());
             response.setIsNewUser(isNewUser);
-
             log.info("登录响应: {}", response);
             return response;
-
         } catch (Exception e) {
             log.error("用户登录失败", e);
             throw new BusinessException("登录失败，请重试");

@@ -109,6 +109,7 @@ public class DataSyncServiceImpl implements DataSyncService {
             }
 
             log.info("找到{}个充电站，开始同步状态信息", stationIds.size());
+            log.info("充电站ID列表: {}", stationIds);
 
             // 分批查询状态（每次最多50个）
             int batchSize = 50;
@@ -122,9 +123,10 @@ public class DataSyncServiceImpl implements DataSyncService {
                     List<String> batchIds = stationIds.subList(i, endIndex);
 
                     log.debug("正在同步第{}/{}批充电站状态，包含{}个充电站", currentBatch, totalBatches, batchIds.size());
-
+                    log.debug("本批充电站ID: {}", batchIds); // 添加这行日志
                     // 查询这批充电站的状态
                     var statusInfos = energyPlatformService.queryStationStatus(batchIds);
+                    log.info("电能平台返回状态信息: statusInfos={}", statusInfos);
 
                     if (!CollectionUtils.isEmpty(statusInfos)) {
                         // 更新充电桩状态
@@ -135,9 +137,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                         }
                         successfulBatches++;
                     }
-
                     log.debug("第{}/{}批充电桩状态同步完成", currentBatch, totalBatches);
-
                 } catch (Exception e) {
                     log.error("第{}/{}批充电桩状态同步失败: {}", currentBatch, totalBatches, e.getMessage());
                     // 继续处理下一批，不因为单批失败而终止整个同步过程
@@ -176,7 +176,7 @@ public class DataSyncServiceImpl implements DataSyncService {
      */
     private void syncSingleStation(StationInfo stationInfo) {
         try {
-            log.debug("开始同步充电站: {}", stationInfo.getStationID());
+            log.info("🔄 开始同步充电站: ID={}, 名称={}", stationInfo.getStationID(), stationInfo.getStationName());
 
             // 1. 同步充电站基础信息
             ChargingStation station = convertToChargingStation(stationInfo);
@@ -192,22 +192,35 @@ public class DataSyncServiceImpl implements DataSyncService {
                 station.setId(existingStation.getId());
                 station.setCreateTime(existingStation.getCreateTime());
                 stationMapper.updateById(station);
-                log.debug("更新充电站: {}", station.getStationId());
+                log.info("📝 更新充电站: ID={}, 名称={}", station.getStationId(), station.getStationName());
             } else {
                 // 新增充电站
                 stationMapper.insert(station);
-                log.debug("新增充电站: {}", station.getStationId());
+                log.info("➕ 新增充电站: ID={}, 名称={}", station.getStationId(), station.getStationName());
             }
 
             // 2. 同步充电桩信息
+            int totalSyncedConnectors = 0;
             if (!CollectionUtils.isEmpty(stationInfo.getEquipmentInfos())) {
-                for (EquipmentInfo equipmentInfo : stationInfo.getEquipmentInfos()) {
+                log.info("🔌 开始同步{}个设备的充电桩信息", stationInfo.getEquipmentInfos().size());
+
+                for (int i = 0; i < stationInfo.getEquipmentInfos().size(); i++) {
+                    EquipmentInfo equipmentInfo = stationInfo.getEquipmentInfos().get(i);
+                    log.info("📱 同步设备{}/{}: ID={}, 类型={}",
+                            i + 1, stationInfo.getEquipmentInfos().size(),
+                            equipmentInfo.getEquipmentID(), equipmentInfo.getEquipmentType());
+
                     syncEquipmentConnectors(stationInfo.getStationID(), equipmentInfo);
+                    log.info("✅ 设备{}同步完成", equipmentInfo.getEquipmentID());
                 }
+            } else {
+                log.warn("⚠️  充电站{}没有设备信息", stationInfo.getStationID());
             }
 
+            log.info("🎉 充电站{}同步完成，共同步{}个充电桩", stationInfo.getStationID(), totalSyncedConnectors);
+
         } catch (Exception e) {
-            log.error("同步充电站{}失败: {}", stationInfo.getStationID(), e.getMessage());
+            log.error("❌ 同步充电站{}失败: {}", stationInfo.getStationID(), e.getMessage());
             throw e; // 重新抛出异常，让上层处理
         }
     }
@@ -217,11 +230,21 @@ public class DataSyncServiceImpl implements DataSyncService {
      */
     private void syncEquipmentConnectors(String stationId, EquipmentInfo equipmentInfo) {
         if (CollectionUtils.isEmpty(equipmentInfo.getConnectorInfos())) {
-            return;
+            log.warn("⚠️  设备{}没有充电桩信息", equipmentInfo.getEquipmentID());
+            return ;
         }
 
-        for (ConnectorInfo connectorInfo : equipmentInfo.getConnectorInfos()) {
+        log.info("⚡ 开始同步设备{}的{}个充电桩",
+                equipmentInfo.getEquipmentID(), equipmentInfo.getConnectorInfos().size());
+
+        int syncedCount = 0;
+        for (int i = 0; i < equipmentInfo.getConnectorInfos().size(); i++) {
+            ConnectorInfo connectorInfo = equipmentInfo.getConnectorInfos().get(i);
             try {
+                log.debug("🔌 同步充电桩{}/{}: ID={}, 类型={}, 功率={}kW",
+                        i + 1, equipmentInfo.getConnectorInfos().size(),
+                        connectorInfo.getConnectorID(), connectorInfo.getConnectorType(), connectorInfo.getPower());
+
                 ChargingConnector connector = convertToChargingConnector(stationId, equipmentInfo, connectorInfo);
 
                 // 查询是否已存在
@@ -237,17 +260,24 @@ public class DataSyncServiceImpl implements DataSyncService {
                     connector.setStatus(existingConnector.getStatus()); // 保留原有状态
                     connector.setStatusUpdateTime(existingConnector.getStatusUpdateTime());
                     connectorMapper.updateById(connector);
-                    log.debug("更新充电桩: {}", connector.getConnectorId());
+                    log.debug("📝 更新充电桩: {}", connector.getConnectorId());
                 } else {
                     // 新增充电桩
                     connectorMapper.insert(connector);
-                    log.debug("新增充电桩: {}", connector.getConnectorId());
+                    log.debug("➕ 新增充电桩: {}", connector.getConnectorId());
                 }
+
+                syncedCount++;
             } catch (Exception e) {
-                log.error("同步充电桩{}失败: {}", connectorInfo.getConnectorID(), e.getMessage());
+                log.error("❌ 同步充电桩{}失败: {}", connectorInfo.getConnectorID(), e.getMessage());
                 // 继续处理下一个充电桩
             }
         }
+
+        log.info("✅ 设备{}充电桩同步完成: {}/{}",
+                equipmentInfo.getEquipmentID(), syncedCount, equipmentInfo.getConnectorInfos().size());
+
+        return ;
     }
 
     /**
@@ -266,6 +296,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                 .eq(ChargingConnector::getConnectorId, statusInfo.getConnectorID())
                                 .set(ChargingConnector::getStatus, statusInfo.getStatus())
                                 .set(ChargingConnector::getStatusUpdateTime, LocalDateTime.now())
+                                .set(ChargingConnector::getUpdateTime, LocalDateTime.now()) // 手动设置
                 );
 
                 if (updated > 0) {

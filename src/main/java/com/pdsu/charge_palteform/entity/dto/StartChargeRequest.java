@@ -10,4 +10,7 @@ public class StartChargeRequest {
     private String connectorId;
 
     private String qrCode; // 二维码信息（可选）
+
+    private Long couponId;
+
 }

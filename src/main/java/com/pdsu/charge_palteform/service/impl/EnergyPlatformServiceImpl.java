@@ -215,22 +215,25 @@ public class EnergyPlatformServiceImpl implements EnergyPlatformService {
         if (!isConfigValid()) {
             throw new BusinessException("电能平台配置不完整，请联系管理员配置相关参数");
         }
-
         try {
-            log.info("查询电能平台充电站信息，页码: {}, 页大小: {}", pageNo, pageSize);
+            log.info("========== 开始查询电能平台充电站信息 ==========");
+            log.info("查询参数: lastQueryTime={}, pageNo={}, pageSize={}", lastQueryTime, pageNo, pageSize);
             // 1. 构建查询请求
             StationQueryPlatformRequest queryRequest = new StationQueryPlatformRequest();
             queryRequest.setLastQueryTime(lastQueryTime);
             queryRequest.setPageNo(pageNo);
             queryRequest.setPageSize(pageSize);
-
             // 2. 加密数据
             String dataJson = objectMapper.writeValueAsString(queryRequest);
-            log.debug("充电站查询请求数据: {}", dataJson);
+            log.info("🔍 充电站查询请求原始数据: {}", dataJson);
+
             String encryptedData = AesUtil.encrypt(dataJson, config.getDataSecret(), config.getDataSecretIv());
+            log.debug("🔐 加密后的请求数据: {}", encryptedData);
 
             // 3. 构建平台请求
             PlatformRequest request = buildPlatformRequest(encryptedData);
+            log.info("📤 完整请求参数: OperatorID={}, TimeStamp={}, Seq={}",
+                    request.getOperatorID(), request.getTimeStamp(), request.getSeq());
 
             // 4. 发送请求
             String url = config.getBaseUrl() + "/query_stations_info";
@@ -238,120 +241,224 @@ public class EnergyPlatformServiceImpl implements EnergyPlatformService {
             headers.setContentType(MediaType.APPLICATION_JSON);
             headers.setBearerAuth(getAccessToken());
 
-            HttpEntity<PlatformRequest> entity = new HttpEntity<>(request, headers);
-            ResponseEntity<PlatformResponse> response = restTemplate.postForEntity(url, entity, PlatformResponse.class);
+            log.info("🌐 发送请求到电能平台: {}", url);
+            log.debug("🔑 使用Token: {}...", getAccessToken().substring(0, Math.min(20, getAccessToken().length())));
 
-            if (response.getBody() == null || response.getBody().getRet() != 0) {
-                throw new BusinessException("查询充电站信息失败");
+            HttpEntity<PlatformRequest> entity = new HttpEntity<>(request, headers);
+
+            // 使用String类型接收原始响应，便于调试
+            ResponseEntity<String> rawResponse = restTemplate.postForEntity(url, entity, String.class);
+
+            log.info("📥 电能平台原始响应状态: {}", rawResponse.getStatusCode());
+            log.info("📥 电能平台原始响应内容: {}", rawResponse.getBody());
+
+            if (rawResponse.getBody() == null || rawResponse.getBody().trim().isEmpty()) {
+                throw new BusinessException("电能平台返回空响应");
+            }
+
+            // 解析响应
+            PlatformResponse response;
+            try {
+                response = objectMapper.readValue(rawResponse.getBody(), PlatformResponse.class);
+                log.info("✅ 解析后的平台响应: Ret={}, Msg={}, Data长度={}",
+                        response.getRet(), response.getMsg(),
+                        response.getData() != null ? response.getData().length() : 0);
+            } catch (Exception e) {
+                log.error("❌ JSON解析失败，原始响应: {}", rawResponse.getBody());
+                throw new BusinessException("响应格式错误: " + e.getMessage());
+            }
+
+            if (response.getRet() != 0) {
+                log.error("❌ 电能平台返回错误: Ret={}, Msg={}", response.getRet(), response.getMsg());
+                throw new BusinessException("查询充电站信息失败: Ret=" + response.getRet() + ", Msg=" + response.getMsg());
+            }
+
+            if (response.getData() == null || response.getData().trim().isEmpty()) {
+                log.warn("⚠️  电能平台返回的Data字段为空");
+                return new ArrayList<>();
             }
 
             // 5. 解密响应数据
-            String decryptedData = AesUtil.decrypt(response.getBody().getData(),
-                    config.getDataSecret(), config.getDataSecretIv());
+            String decryptedData;
+            try {
+                decryptedData = AesUtil.decrypt(response.getData(), config.getDataSecret(), config.getDataSecretIv());
+                log.info("🔓 解密后的完整响应数据: {}", decryptedData);
+            } catch (Exception e) {
+                log.error("❌ 数据解密失败: {}", e.getMessage());
+                throw new BusinessException("响应数据解密失败: " + e.getMessage());
+            }
 
             // 6. 解析充电站列表
-            StationQueryResponse queryResponse = objectMapper.readValue(decryptedData, StationQueryResponse.class);
+            StationQueryResponse queryResponse;
+            try {
+                queryResponse = objectMapper.readValue(decryptedData, StationQueryResponse.class);
+                log.info("📊 解析后的查询响应: Total={}, StationInfos数量={}",
+                        queryResponse.getTotal(),
+                        queryResponse.getStationInfos() != null ? queryResponse.getStationInfos().size() : 0);
+            } catch (Exception e) {
+                log.error("❌ 充电站数据解析失败: {}", e.getMessage());
+                log.error("原始解密数据: {}", decryptedData);
+                throw new BusinessException("充电站数据解析失败: " + e.getMessage());
+            }
 
-            log.info("查询到{}个充电站", queryResponse.getStationInfos().size());
-            return queryResponse.getStationInfos();
+            List<StationInfo> stationInfos = queryResponse.getStationInfos();
+            if (stationInfos == null) {
+                log.warn("⚠️  充电站列表为null，返回空列表");
+                return new ArrayList<>();
+            }
+
+            log.info("🏪 成功查询到{}个充电站", stationInfos.size());
+
+            // 详细打印每个充电站的信息
+            for (int i = 0; i < stationInfos.size(); i++) {
+                StationInfo station = stationInfos.get(i);
+                log.info("📍 充电站{}: ID={}, 名称={}, 地址={}",
+                        i + 1, station.getStationID(), station.getStationName(), station.getAddress());
+
+                // 打印设备信息
+                if (station.getEquipmentInfos() != null && !station.getEquipmentInfos().isEmpty()) {
+                    log.info("   🔌 包含{}个设备", station.getEquipmentInfos().size());
+
+                    int totalConnectors = 0;
+                    for (int j = 0; j < station.getEquipmentInfos().size(); j++) {
+                        EquipmentInfo equipment = station.getEquipmentInfos().get(j);
+                        int connectorCount = equipment.getConnectorInfos() != null ? equipment.getConnectorInfos().size() : 0;
+                        totalConnectors += connectorCount;
+
+                        log.info("   📱 设备{}: ID={}, 类型={}, 充电桩数={}",
+                                j + 1, equipment.getEquipmentID(), equipment.getEquipmentType(), connectorCount);
+
+                        // 打印充电桩信息
+                        if (equipment.getConnectorInfos() != null) {
+                            for (int k = 0; k < equipment.getConnectorInfos().size(); k++) {
+                                ConnectorInfo connector = equipment.getConnectorInfos().get(k);
+                                log.info("     ⚡ 充电桩{}: ID={}, 类型={}, 功率={}kW",
+                                        k + 1, connector.getConnectorID(), connector.getConnectorType(), connector.getPower());
+                            }
+                        }
+                    }
+
+                    log.info("   📊 充电站{}总计{}个充电桩", station.getStationID(), totalConnectors);
+                } else {
+                    log.warn("   ⚠️  充电站{}没有配置设备信息", station.getStationID());
+                }
+            }
+
+            // 统计信息
+            int totalConnectors = stationInfos.stream()
+                    .mapToInt(station -> {
+                        if (station.getEquipmentInfos() != null) {
+                            return station.getEquipmentInfos().stream()
+                                    .mapToInt(equipment ->
+                                            equipment.getConnectorInfos() != null ? equipment.getConnectorInfos().size() : 0)
+                                    .sum();
+                        }
+                        return 0;
+                    })
+                    .sum();
+
+            log.info("📈 查询汇总: 充电站数量={}, 总充电桩数量={}", stationInfos.size(), totalConnectors);
+            log.info("========== 充电站信息查询完成 ==========");
+
+            return stationInfos;
 
         } catch (Exception e) {
-            log.error("查询电能平台充电站信息失败", e);
+            log.error("❌ 查询电能平台充电站信息失败", e);
             throw new BusinessException("查询充电站信息失败: " + e.getMessage());
         }
     }
 
-    /**
-     * 生成模拟充电站数据
-     */
-    private List<StationInfo> generateMockStationData() {
-        List<StationInfo> mockStations = new ArrayList<>();
 
-        // 创建几个模拟充电站
-        for (int i = 1; i <= 5; i++) {
-            StationInfo station = new StationInfo();
-            station.setStationID("MOCK_STATION_" + String.format("%03d", i));
-            station.setStationName("模拟充电站" + i);
-            station.setAddress("北京市海淀区模拟地址" + i + "号");
-            station.setStationLng(java.math.BigDecimal.valueOf(116.3 + i * 0.01)); // 模拟经度
-            station.setStationLat(java.math.BigDecimal.valueOf(39.9 + i * 0.01));  // 模拟纬度
-            station.setStationTel("400-888-" + String.format("%04d", i));
-            station.setStationStatus(2); // 运营中
-            station.setBusineHours("00:00-24:00");
-            station.setParkFee("免费停车2小时");
-
-            // 创建设备信息
-            List<EquipmentInfo> equipments = new ArrayList<>();
-            for (int j = 1; j <= 2; j++) {
-                EquipmentInfo equipment = new EquipmentInfo();
-                equipment.setEquipmentID("MOCK_EQUIP_" + i + "_" + j);
-                equipment.setEquipmentType(j == 1 ? 1 : 2); // 1:直流，2:交流
-                equipment.setPower(java.math.BigDecimal.valueOf(j == 1 ? 60.0 : 7.0));
-
-                // 创建充电桩接口
-                List<ConnectorInfo> connectors = new ArrayList<>();
-                for (int k = 1; k <= 2; k++) {
-                    ConnectorInfo connector = new ConnectorInfo();
-                    connector.setConnectorID("MOCK_CONN_" + i + "_" + j + "_" + k);
-                    connector.setConnectorName("充电桩" + j + "-" + k);
-                    connector.setConnectorType(j == 1 ? 4 : 3); // 4:直流枪头，3:交流插头
-                    connector.setPower(java.math.BigDecimal.valueOf(j == 1 ? 30.0 : 7.0));
-                    connector.setCurrent(j == 1 ? 125 : 32);
-                    connector.setVoltageUpperLimits(j == 1 ? 500 : 380);
-                    connector.setVoltageLowerLimits(j == 1 ? 200 : 220);
-                    connectors.add(connector);
-                }
-                equipment.setConnectorInfos(connectors);
-                equipments.add(equipment);
-            }
-            station.setEquipmentInfos(equipments);
-            mockStations.add(station);
-        }
-
-        log.info("生成了{}个模拟充电站数据", mockStations.size());
-        return mockStations;
-    }
-
+    //throw new BusinessException("电能平台配置不完整，请联系管理员配置相关参数");
     @Override
     public List<StationStatusInfo> queryStationStatus(List<String> stationIds) {
         // 检查配置是否完整
         if (!isConfigValid()) {
             throw new BusinessException("电能平台配置不完整，请联系管理员配置相关参数");
         }
-
         try {
-            log.info("查询{}个充电站状态", stationIds.size());
-
+            log.info("查询{}个充电站状态: {}", stationIds.size(), stationIds);
             // 1. 构建状态查询请求
             StationStatusRequest statusRequest = new StationStatusRequest();
             statusRequest.setStationIDs(stationIds);
-
             // 2. 加密数据
             String dataJson = objectMapper.writeValueAsString(statusRequest);
+            log.info("状态查询请求原始数据: {}", dataJson);
             String encryptedData = AesUtil.encrypt(dataJson, config.getDataSecret(), config.getDataSecretIv());
-
+            log.debug("状态查询加密后数据: {}", encryptedData);
             // 3. 构建平台请求
             PlatformRequest request = buildPlatformRequest(encryptedData);
-
+            log.info("完整请求参数: OperatorID={}, TimeStamp={}, Seq={}",
+                    request.getOperatorID(), request.getTimeStamp(), request.getSeq());
             // 4. 发送请求
             String url = config.getBaseUrl() + "/query_station_status";
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             headers.setBearerAuth(getAccessToken());
-
+            log.info("发送状态查询请求到: {}", url);
             HttpEntity<PlatformRequest> entity = new HttpEntity<>(request, headers);
-            ResponseEntity<PlatformResponse> response = restTemplate.postForEntity(url, entity, PlatformResponse.class);
-
-            if (response.getBody() == null || response.getBody().getRet() != 0) {
-                throw new BusinessException("查询充电站状态失败");
+            ResponseEntity<String> rawResponse = restTemplate.postForEntity(url, entity, String.class);
+            log.info("电能平台原始响应状态: {}", rawResponse.getStatusCode());
+            log.info("电能平台原始响应内容: {}", rawResponse.getBody());
+            if (rawResponse.getBody() == null || rawResponse.getBody().trim().isEmpty()) {
+                throw new BusinessException("电能平台返回空响应");
+            }
+            // 解析响应
+            PlatformResponse response;
+            try {
+                response = objectMapper.readValue(rawResponse.getBody(), PlatformResponse.class);
+                log.info("解析后的平台响应: Ret={}, Msg={}, Data长度={}",
+                        response.getRet(), response.getMsg(),
+                        response.getData() != null ? response.getData().length() : 0);
+            } catch (Exception e) {
+                log.error("JSON解析失败，原始响应: {}", rawResponse.getBody());
+                throw new BusinessException("响应格式错误: " + e.getMessage());
+            }
+            if (response.getRet() != 0) {
+                log.error("电能平台返回错误: Ret={}, Msg={}", response.getRet(), response.getMsg());
+                throw new BusinessException("查询充电站状态失败: Ret=" + response.getRet() + ", Msg=" + response.getMsg());
+            }
+            if (response.getData() == null || response.getData().trim().isEmpty()) {
+                log.warn("电能平台返回的Data字段为空");
+                return new ArrayList<>();
+            }
+            // 5. 解密响应数据
+            String decryptedData;
+            try {
+                decryptedData = AesUtil.decrypt(response.getData(), config.getDataSecret(), config.getDataSecretIv());
+                log.info("状态查询解密后的完整数据: {}", decryptedData);
+            } catch (Exception e) {
+                log.error("数据解密失败: {}", e.getMessage());
+                throw new BusinessException("响应数据解密失败: " + e.getMessage());
+            }
+            // 6. 解析状态响应
+            StationStatusResponse statusResponse;
+            try {
+                statusResponse = objectMapper.readValue(decryptedData, StationStatusResponse.class);
+                log.info("解析后的状态响应对象: {}", statusResponse);
+            } catch (Exception e) {
+                log.error("状态响应解析失败: {}", e.getMessage());
+                log.error("原始解密数据: {}", decryptedData);
+                throw new BusinessException("状态响应解析失败: " + e.getMessage());
             }
 
-            // 5. 解密响应数据
-            String decryptedData = AesUtil.decrypt(response.getBody().getData(),
-                    config.getDataSecret(), config.getDataSecretIv());
+            if (statusResponse.getStationStatusInfos() == null) {
+                log.warn("状态响应中没有StationStatusInfos字段，完整响应: {}", statusResponse);
+                return new ArrayList<>();
+            }
+            log.info("成功查询到{}个充电站的状态信息", statusResponse.getStationStatusInfos().size());
+            // 打印详细的状态信息用于调试
+            for (int i = 0; i < statusResponse.getStationStatusInfos().size(); i++) {
+                StationStatusInfo info = statusResponse.getStationStatusInfos().get(i);
+                log.info("充电站{}状态信息: 包含{}个充电桩状态", i,
+                        info.getStationStatusInfos() != null ? info.getStationStatusInfos().size() : 0);
 
-            StationStatusResponse statusResponse = objectMapper.readValue(decryptedData, StationStatusResponse.class);
-
+                if (info.getStationStatusInfos() != null) {
+                    for (ConnectorStatusInfo connectorInfo : info.getStationStatusInfos()) {
+                        log.info("  充电桩ID: {}, 状态: {}", connectorInfo.getConnectorID(), connectorInfo.getStatus());
+                    }
+                }
+            }
             return statusResponse.getStationStatusInfos();
 
         } catch (Exception e) {
@@ -360,33 +467,7 @@ public class EnergyPlatformServiceImpl implements EnergyPlatformService {
         }
     }
 
-    /**
-     * 生成模拟状态数据
-     */
-    private List<StationStatusInfo> generateMockStatusData(List<String> stationIds) {
-        List<StationStatusInfo> statusInfos = new ArrayList<>();
 
-        for (String stationId : stationIds) {
-            StationStatusInfo statusInfo = new StationStatusInfo();
-            List<ConnectorStatusInfo> connectorStatusInfos = new ArrayList<>();
-
-            // 为每个充电站生成几个充电桩的状态
-            for (int i = 1; i <= 4; i++) {
-                ConnectorStatusInfo connectorStatus = new ConnectorStatusInfo();
-                connectorStatus.setConnectorID(stationId.replace("STATION", "CONN") + "_" + i);
-                connectorStatus.setStatus(i % 3 == 0 ? 2 : 1); // 模拟部分充电中，部分空闲
-                connectorStatus.setParkStatus(10); // 空闲
-                connectorStatus.setLockStatus(10); // 已解锁
-                connectorStatusInfos.add(connectorStatus);
-            }
-
-            statusInfo.setStationStatusInfos(connectorStatusInfos);
-            statusInfos.add(statusInfo);
-        }
-
-        log.info("生成了{}个充电站的模拟状态数据", statusInfos.size());
-        return statusInfos;
-    }
 
     @Override
     public boolean validateToken(String token) {

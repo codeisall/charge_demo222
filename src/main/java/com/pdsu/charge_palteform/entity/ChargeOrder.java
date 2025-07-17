@@ -56,4 +56,8 @@ public class ChargeOrder {
 
     @TableField(fill = FieldFill.INSERT_UPDATE)
     private LocalDateTime updateTime;
+
+    private Long couponId;
+    private BigDecimal couponDeduction;
+    private BigDecimal actualPayment;
 }

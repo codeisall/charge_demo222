@@ -11,6 +11,13 @@ app:
   schedule:
     enabled: true  # 是否开启定时任务
 
+  order-sync:
+    enabled: true  # 启用订单状态同步
+    interval: 30000  # 同步间隔（毫秒）
+    batch-size: 20   # 每批处理数量
+    abnormal-check-interval: 300000  # 异常订单检查间隔（毫秒）
+
+
 http:
   client:
     connect-timeout: 10000  # 连接超时（毫秒）
@@ -21,6 +28,7 @@ logging:
   level:
     root: INFO
     com.pdsu.energy: DEBUG
+    com.pdsu.charge_palteform.config.ScheduleConfig: INFO
     org.springframework.web.client.RestTemplate: DEBUG
     org.springframework.http.client: DEBUG
 

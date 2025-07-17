@@ -28,5 +28,6 @@ public class EquipmentInfo {
 
     @JsonProperty("Power")
     private BigDecimal Power;
+
     private String EquipmentName;
 }
