@@ -10,11 +10,14 @@ import com.pdsu.charge_palteform.entity.User;
 import com.pdsu.charge_palteform.entity.dto.*;
 import com.pdsu.charge_palteform.entity.platefrom.charge.ChargePolicyInfo;
 import com.pdsu.charge_palteform.entity.platefrom.charge.ChargeStatusData;
+import com.pdsu.charge_palteform.enums.ChargeOrderStatusEnum;
 import com.pdsu.charge_palteform.enums.ConnectorStatusEnum;
 import com.pdsu.charge_palteform.enums.ConnectorTypeEnum;
+import com.pdsu.charge_palteform.enums.PlatformChargeStatusEnum;
 import com.pdsu.charge_palteform.exception.BusinessException;
 import com.pdsu.charge_palteform.mapper.ChargeOrderMapper;
 import com.pdsu.charge_palteform.service.*;
+import com.pdsu.charge_palteform.utils.GenerateUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -26,6 +29,8 @@ import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.stream.Collectors;
+
+
 
 
 @Slf4j
@@ -79,7 +84,7 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
 
             // 6. 生成订单
             ChargeOrder order = new ChargeOrder();
-            order.setOrderNo(generateOrderNo());
+            order.setOrderNo(GenerateUtils.generateOrderNo());
             order.setUserId(userId);
             order.setConnectorId(request.getConnectorId());
             order.setStationId(connector.getStationId());
@@ -89,7 +94,6 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
             order.setTotalFee(BigDecimal.ZERO);
             order.setElectricityFee(BigDecimal.ZERO);
             order.setServiceFee(BigDecimal.ZERO);
-
 
             // 先保存订单
             boolean saveResult = save(order);
@@ -123,10 +127,10 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
                 throw new BusinessException("启动充电失败：" + e.getMessage());
             }
 
-            // 8. 更新订单信息 - 关键修复点
+            // 8. 更新订单信息
             order.setPlatformOrderNo(platformOrderNo);
             order.setChargeStatus(1); // 启动中
-            order.setStatus(2); // 充电中 - 这里是关键，需要将状态改为充电中
+            order.setStatus(2); // 充电中
             order.setStartTime(LocalDateTime.now());
 
             // 强制更新数据库
@@ -138,6 +142,11 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
                 log.error("订单状态更新失败，订单号: {}", order.getOrderNo());
                 throw new BusinessException("订单状态更新失败");
             }
+
+            //发送实时启动通知
+            ChargingStation station = stationService.getById(connector.getStationId());
+            notificationService.sendChargeStartNotification(
+                    userId, order.getOrderNo(), station.getStationName(), request.getConnectorId());
 
             // 9. 立即从平台查询一次状态进行同步
             try {
@@ -219,9 +228,7 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
                 if (!stopResult) {
                     throw new BusinessException("电能平台停止充电失败");
                 }
-
                 log.info("停止充电请求发送成功，平台订单号: {}", order.getPlatformOrderNo());
-
             } catch (Exception e) {
                 log.error("调用电能平台停止充电失败", e);
                 throw new BusinessException("停止充电失败：" + e.getMessage());
@@ -238,6 +245,10 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
             }
             log.info("订单状态已更新: orderNo={}, status={}, chargeStatus={}, stopReason={}",
                     order.getOrderNo(), order.getStatus(), order.getChargeStatus(), order.getStopReason());
+
+            notificationService.sendChargeStatusNotification(
+                    userId, order.getOrderNo(), convertOrderToStatusData(order));
+
             // 4. 异步查询最终状态
             asyncQueryFinalStatus(order.getOrderNo(), order.getPlatformOrderNo());
             // 5. 构建响应
@@ -511,42 +522,37 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
         // 实现订单完成逻辑
     }
 
-    /**
-     * 生成订单号
-     */
-    private String generateOrderNo() {
-        return "CO" + System.currentTimeMillis() + String.format("%04d", (int)(Math.random() * 10000));
+    @Override
+    public ChargeOrder getOne(LambdaQueryWrapper<ChargeOrder> queryWrapper) {
+        return baseMapper.selectOne(queryWrapper);
     }
+
+    @Override
+    public ChargeOrder getByPlatformOrderNo(String platformOrderNo) {
+        return baseMapper.selectOne(
+                new LambdaQueryWrapper<ChargeOrder>()
+                        .eq(ChargeOrder::getPlatformOrderNo, platformOrderNo)
+        );
+    }
+
+    @Override
+    public boolean updateById(ChargeOrder order) {
+        return baseMapper.updateById(order) > 0;
+    }
+
 
     /**
      * 获取订单状态文本
      */
     private String getOrderStatusText(Integer status) {
-        if (status == null) return "未知";
-        switch (status) {
-            case 1: return "待充电";
-            case 2: return "充电中";
-            case 3: return "充电完成";
-            case 4: return "已结算";
-            case 5: return "已取消";
-            case 6: return "异常";
-            default: return "未知";
-        }
+        return ChargeOrderStatusEnum.getDesc(status);
     }
 
     /**
      * 获取充电状态文本
      */
     private String getChargeStatusText(Integer chargeStatus) {
-        if (chargeStatus == null) return "未知";
-        switch (chargeStatus) {
-            case 1: return "启动中";
-            case 2: return "充电中";
-            case 3: return "停止中";
-            case 4: return "已结束";
-            case 5: return "未知";
-            default: return "未知";
-        }
+        return PlatformChargeStatusEnum.getDesc(chargeStatus);
     }
 
     /**
@@ -556,7 +562,7 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
         ChargeOrderListItem item = new ChargeOrderListItem();
         item.setOrderNo(order.getOrderNo());
         item.setStatus(order.getStatus());
-        item.setStatusText(getOrderStatusText(order.getStatus()));
+        item.setStatusText(ChargeOrderStatusEnum.getDesc(order.getStatus()));
         item.setStartTime(order.getStartTime());
         item.setEndTime(order.getEndTime());
         item.setTotalPower(order.getTotalPower());
@@ -589,9 +595,9 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
         ChargeOrderDetail detail = new ChargeOrderDetail();
         detail.setOrderNo(order.getOrderNo());
         detail.setStatus(order.getStatus());
-        detail.setStatusText(getOrderStatusText(order.getStatus()));
+        detail.setStatusText(ChargeOrderStatusEnum.getDesc(order.getStatus()));
         detail.setChargeStatus(order.getChargeStatus());
-        detail.setChargeStatusText(getChargeStatusText(order.getChargeStatus()));
+        detail.setChargeStatusText(PlatformChargeStatusEnum.getDesc(order.getChargeStatus())); // 使用枚举
         detail.setStopReason(order.getStopReason());
         detail.setStopReasonText(getStopReasonText(order.getStopReason()));
         detail.setStartTime(order.getStartTime());
@@ -746,6 +752,20 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
             case 4: return 4; // 连接器断开
             default: return 1; // 默认为平台停止
         }
+    }
+
+    private ChargeStatusData convertOrderToStatusData(ChargeOrder order) {
+        ChargeStatusData statusData = new ChargeStatusData();
+        statusData.setPlatformOrderNo(order.getPlatformOrderNo());
+        statusData.setConnectorId(order.getConnectorId());
+        statusData.setChargeStatus(order.getChargeStatus());
+        statusData.setStartTime(order.getStartTime());
+        statusData.setEndTime(order.getEndTime());
+        statusData.setTotalPower(order.getTotalPower());
+        statusData.setElectricityFee(order.getElectricityFee());
+        statusData.setServiceFee(order.getServiceFee());
+        statusData.setTotalFee(order.getTotalFee());
+        return statusData;
     }
 
 }

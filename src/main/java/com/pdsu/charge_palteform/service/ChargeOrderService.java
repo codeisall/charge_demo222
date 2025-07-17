@@ -1,5 +1,7 @@
 package com.pdsu.charge_palteform.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.pdsu.charge_palteform.entity.ChargeOrder;
 import com.pdsu.charge_palteform.entity.dto.*;
 
 public interface ChargeOrderService {
@@ -63,4 +65,10 @@ public interface ChargeOrderService {
      * @param orderData 订单数据
      */
     void handleChargeCompletePush(String orderNo, Object orderData);
+
+    ChargeOrder getOne(LambdaQueryWrapper<ChargeOrder> queryWrapper);
+
+    boolean updateById(ChargeOrder order);
+
+    ChargeOrder getByPlatformOrderNo(String platformOrderNo);
 }

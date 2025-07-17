@@ -5,9 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.pdsu.charge_palteform.entity.ChargeOrder;
 import com.pdsu.charge_palteform.entity.platefrom.charge.ChargeStatusData;
 import com.pdsu.charge_palteform.mapper.ChargeOrderMapper;
-import com.pdsu.charge_palteform.service.CouponService;
-import com.pdsu.charge_palteform.service.DataSyncService;
-import com.pdsu.charge_palteform.service.EnergyPlatformService;
+import com.pdsu.charge_palteform.service.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -25,12 +23,12 @@ import java.util.List;
 @RequiredArgsConstructor
 @ConditionalOnProperty(name = "app.schedule.enabled", havingValue = "true", matchIfMissing = true)
 public class ScheduleConfig {
-    private final DataSyncService dataSyncService;
 
+    private final DataSyncService dataSyncService;
     private final ChargeOrderMapper chargeOrderMapper;
     private final EnergyPlatformService energyPlatformService;
-
     private final CouponService couponService;
+    private final OrderStateManagerService orderStateManagerService; // 新增
 
     /**
      * 每天凌晨2点同步充电站基础信息
@@ -166,93 +164,15 @@ public class ScheduleConfig {
         try {
             log.debug("同步订单: orderNo={}, platformOrderNo={}",
                     order.getOrderNo(), order.getPlatformOrderNo());
-
             // 从第三方平台查询最新状态
             ChargeStatusData statusData = energyPlatformService.queryChargeStatus(order.getPlatformOrderNo());
-
             if (statusData == null) {
                 log.debug("未获取到订单{}的状态数据", order.getOrderNo());
                 return false;
             }
-
-            boolean needUpdate = false;
-            ChargeOrder updateOrder = new ChargeOrder();
-            updateOrder.setId(order.getId());
-
-            // 检查充电状态变化
-            if (statusData.getChargeStatus() != null && !statusData.getChargeStatus().equals(order.getChargeStatus())) {
-                updateOrder.setChargeStatus(statusData.getChargeStatus());
-                needUpdate = true;
-                log.info("订单{}充电状态更新: {} -> {}", order.getOrderNo(), order.getChargeStatus(), statusData.getChargeStatus());
-            }
-
-            // 检查订单状态变化
-            Integer newOrderStatus = mapChargeStatusToOrderStatus(statusData.getChargeStatus());
-            if (newOrderStatus != null && !newOrderStatus.equals(order.getStatus())) {
-                updateOrder.setStatus(newOrderStatus);
-                needUpdate = true;
-                log.info("订单{}状态更新: {} -> {}", order.getOrderNo(), order.getStatus(), newOrderStatus);
-
-                // 如果状态变为充电完成，且没有停止原因，设置为平台停止
-                if (newOrderStatus == 3 && order.getStopReason() == null) {
-                    updateOrder.setStopReason(1); // 1-平台停止
-                    log.info("订单{}设置停止原因为平台停止", order.getOrderNo());
-                }
-            }
-
-            // 更新充电电量
-            if (statusData.getTotalPower() != null &&
-                    statusData.getTotalPower().compareTo(order.getTotalPower() != null ? order.getTotalPower() : BigDecimal.ZERO) != 0) {
-                updateOrder.setTotalPower(statusData.getTotalPower());
-                needUpdate = true;
-                log.debug("订单{}充电量更新: {} -> {} kWh", order.getOrderNo(), order.getTotalPower(), statusData.getTotalPower());
-            }
-
-            // 更新电费
-            if (statusData.getElectricityFee() != null &&
-                    statusData.getElectricityFee().compareTo(order.getElectricityFee() != null ? order.getElectricityFee() : BigDecimal.ZERO) != 0) {
-                updateOrder.setElectricityFee(statusData.getElectricityFee());
-                needUpdate = true;
-                log.debug("订单{}电费更新: {} -> {} 元", order.getOrderNo(), order.getElectricityFee(), statusData.getElectricityFee());
-            }
-
-            // 更新服务费
-            if (statusData.getServiceFee() != null &&
-                    statusData.getServiceFee().compareTo(order.getServiceFee() != null ? order.getServiceFee() : BigDecimal.ZERO) != 0) {
-                updateOrder.setServiceFee(statusData.getServiceFee());
-                needUpdate = true;
-                log.debug("订单{}服务费更新: {} -> {} 元", order.getOrderNo(), order.getServiceFee(), statusData.getServiceFee());
-            }
-
-            // 更新总金额
-            if (statusData.getTotalFee() != null &&
-                    statusData.getTotalFee().compareTo(order.getTotalFee() != null ? order.getTotalFee() : BigDecimal.ZERO) != 0) {
-                updateOrder.setTotalFee(statusData.getTotalFee());
-                needUpdate = true;
-                log.info("订单{}总费用更新: {} -> {} 元", order.getOrderNo(), order.getTotalFee(), statusData.getTotalFee());
-            }
-
-            // 更新结束时间
-            if (statusData.getEndTime() != null && order.getEndTime() == null) {
-                updateOrder.setEndTime(statusData.getEndTime());
-                needUpdate = true;
-                log.info("订单{}设置结束时间: {}", order.getOrderNo(), statusData.getEndTime());
-            }
-
-            // 如果有变化，则更新数据库
-            if (needUpdate) {
-                int updateResult = chargeOrderMapper.updateById(updateOrder);
-                if (updateResult > 0) {
-                    log.debug("订单{}状态和费用同步成功", order.getOrderNo());
-                    return true;
-                } else {
-                    log.warn("订单{}状态更新失败", order.getOrderNo());
-                    return false;
-                }
-            }
-
-            return false;
-
+            // 使用状态管理服务统一处理更新
+            return orderStateManagerService.updateOrderStatusSafely(
+                    order.getOrderNo(), statusData, "SCHEDULED_SYNC");
         } catch (Exception e) {
             log.error("同步订单{}状态异常: {}", order.getOrderNo(), e.getMessage());
             return false;

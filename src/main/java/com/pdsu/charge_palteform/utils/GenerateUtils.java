@@ -11,6 +11,8 @@ public class GenerateUtils {
     }
 
     //生成订单号
-
+    public static String generateOrderNo() {
+        return "CO" + System.currentTimeMillis() + String.format("%04d", (int)(Math.random() * 10000));
+    }
 
 }
