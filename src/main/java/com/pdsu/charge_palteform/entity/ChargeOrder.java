@@ -60,4 +60,11 @@ public class ChargeOrder {
     private Long couponId;
     private BigDecimal couponDeduction;
     private BigDecimal actualPayment;
+
+    private BigDecimal soc;
+
+    private Integer targetChargeDuration; // 目标充电时长（分钟）
+    private BigDecimal targetSoc; // 目标电量百分比
+    private BigDecimal targetAmount; // 目标充电金额
+    private Integer stopCondition; // 停止条件：1-时间，2-电量，3-金额，4-手动
 }

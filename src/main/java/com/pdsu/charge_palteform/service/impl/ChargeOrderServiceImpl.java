@@ -95,6 +95,13 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
             order.setElectricityFee(BigDecimal.ZERO);
             order.setServiceFee(BigDecimal.ZERO);
 
+            order.setSoc(BigDecimal.ZERO); // 初始SOC
+            // 新增：设置充电控制参数
+            order.setTargetChargeDuration(request.getChargeDuration());
+            order.setTargetSoc(request.getTargetSoc());
+            order.setTargetAmount(request.getTargetAmount());
+            order.setStopCondition(request.getStopCondition());
+
             // 先保存订单
             boolean saveResult = save(order);
             if (!saveResult) {
@@ -275,9 +282,7 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
         try {
             // 等待5秒让平台处理停止请求
             Thread.sleep(5000);
-
             log.info("开始查询订单最终状态: {}", orderNo);
-
             // 查询最终状态
             ChargeStatusData statusData = energyPlatformService.queryChargeStatus(platformOrderNo);
 
@@ -400,11 +405,25 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
     private void updateOrderFromPlatformStatus(ChargeOrder order, ChargeStatusData statusData) {
         try {
             boolean needUpdate = false;
+            boolean shouldStop = false;
 
             // 更新充电状态
             if (statusData.getChargeStatus() != null && !statusData.getChargeStatus().equals(order.getChargeStatus())) {
                 order.setChargeStatus(statusData.getChargeStatus());
                 needUpdate = true;
+            }
+
+            // 更新SOC
+            if (statusData.getSoc() != null && statusData.getSoc().compareTo(order.getSoc() != null ? order.getSoc() : BigDecimal.ZERO) != 0) {
+                order.setSoc(statusData.getSoc());
+                needUpdate = true;
+
+                // 检查SOC停止条件
+                if (order.getStopCondition() != null && order.getStopCondition() == 2 &&
+                        order.getTargetSoc() != null && statusData.getSoc().compareTo(order.getTargetSoc()) >= 0) {
+                    shouldStop = true;
+                    log.info("订单{}达到目标电量{}%，准备停止充电", order.getOrderNo(), order.getTargetSoc());
+                }
             }
 
             // 更新费用信息
@@ -423,6 +442,22 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
             if (statusData.getTotalFee() != null) {
                 order.setTotalFee(statusData.getTotalFee());
                 needUpdate = true;
+                // 检查金额停止条件
+                if (order.getStopCondition() != null && order.getStopCondition() == 3 &&
+                        order.getTargetAmount() != null && statusData.getTotalFee().compareTo(order.getTargetAmount()) >= 0) {
+                    shouldStop = true;
+                    log.info("订单{}达到目标金额{}元，准备停止充电", order.getOrderNo(), order.getTargetAmount());
+                }
+            }
+
+            // 检查时间停止条件
+            if (order.getStopCondition() != null && order.getStopCondition() == 1 &&
+                    order.getTargetChargeDuration() != null && order.getStartTime() != null) {
+                long chargedMinutes = ChronoUnit.MINUTES.between(order.getStartTime(), LocalDateTime.now());
+                if (chargedMinutes >= order.getTargetChargeDuration()) {
+                    shouldStop = true;
+                    log.info("订单{}达到目标时长{}分钟，准备停止充电", order.getOrderNo(), order.getTargetChargeDuration());
+                }
             }
 
             // 更新结束时间
@@ -442,6 +477,11 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
             if (needUpdate) {
                 updateById(order);
                 log.debug("订单{}状态已从电能平台同步更新", order.getOrderNo());
+            }
+
+            // 如果满足停止条件，自动停止充电
+            if (shouldStop && order.getStatus() == 2) { // 仍在充电中
+                autoStopCharge(order);
             }
 
         } catch (Exception e) {
@@ -533,6 +573,33 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
                 new LambdaQueryWrapper<ChargeOrder>()
                         .eq(ChargeOrder::getPlatformOrderNo, platformOrderNo)
         );
+    }
+
+    // 新增：自动停止充电方法
+    private void autoStopCharge(ChargeOrder order) {
+        try {
+            log.info("自动停止充电：orderNo={}, reason=达到停止条件", order.getOrderNo());
+
+            boolean stopResult = energyPlatformService.stopCharge(
+                    order.getPlatformOrderNo(),
+                    order.getConnectorId()
+            );
+
+            if (stopResult) {
+                order.setChargeStatus(3); // 停止中
+                order.setStopReason(5); // 自动停止
+                updateById(order);
+
+                // 发送通知
+                notificationService.sendSystemNotification(
+                        order.getUserId(),
+                        "充电自动停止",
+                        "您的充电已达到设定条件自动停止"
+                );
+            }
+        } catch (Exception e) {
+            log.error("自动停止充电失败：orderNo={}", order.getOrderNo(), e);
+        }
     }
 
     @Override

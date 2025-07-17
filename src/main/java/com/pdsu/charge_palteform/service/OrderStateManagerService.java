@@ -7,6 +7,7 @@ import com.pdsu.charge_palteform.entity.platefrom.charge.ChargeStatusData;
 import com.pdsu.charge_palteform.enums.ChargeOrderStatusEnum;
 import com.pdsu.charge_palteform.enums.PlatformChargeStatusEnum;
 import com.pdsu.charge_palteform.mapper.ChargeOrderMapper;
+import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -15,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -142,6 +144,16 @@ public class OrderStateManagerService {
             updateData.setTimeChanged(true);
         }
 
+        // 新增：检查SOC变化
+        if (statusData.getSoc() != null &&
+                statusData.getSoc().compareTo(currentOrder.getSoc() != null ? currentOrder.getSoc() : BigDecimal.ZERO) != 0) {
+            updateData.setSoc(statusData.getSoc());
+            updateData.setSocChanged(true);
+
+            // 检查是否需要自动停止
+            updateData.setShouldAutoStop(checkAutoStopConditions(currentOrder, statusData));
+        }
+
         return updateData;
     }
 
@@ -216,6 +228,7 @@ public class OrderStateManagerService {
     /**
      * 订单更新数据类
      */
+    @Data
     private static class ChargeOrderUpdate {
         private Integer status;
         private Integer chargeStatus;
@@ -224,38 +237,43 @@ public class OrderStateManagerService {
         private BigDecimal serviceFee;
         private BigDecimal totalFee;
         private LocalDateTime endTime;
+        private BigDecimal soc;
 
         private boolean orderStatusChanged = false;
         private boolean chargeStatusChanged = false;
         private boolean feeChanged = false;
         private boolean timeChanged = false;
+        private boolean socChanged = false;
+        private boolean shouldAutoStop = false;
 
         public boolean hasChanges() {
             return orderStatusChanged || chargeStatusChanged || feeChanged || timeChanged;
         }
-
-        // getters and setters
-        public Integer getStatus() { return status; }
-        public void setStatus(Integer status) { this.status = status; }
-        public Integer getChargeStatus() { return chargeStatus; }
-        public void setChargeStatus(Integer chargeStatus) { this.chargeStatus = chargeStatus; }
-        public BigDecimal getTotalPower() { return totalPower; }
-        public void setTotalPower(BigDecimal totalPower) { this.totalPower = totalPower; }
-        public BigDecimal getElectricityFee() { return electricityFee; }
-        public void setElectricityFee(BigDecimal electricityFee) { this.electricityFee = electricityFee; }
-        public BigDecimal getServiceFee() { return serviceFee; }
-        public void setServiceFee(BigDecimal serviceFee) { this.serviceFee = serviceFee; }
-        public BigDecimal getTotalFee() { return totalFee; }
-        public void setTotalFee(BigDecimal totalFee) { this.totalFee = totalFee; }
-        public LocalDateTime getEndTime() { return endTime; }
-        public void setEndTime(LocalDateTime endTime) { this.endTime = endTime; }
-        public boolean isOrderStatusChanged() { return orderStatusChanged; }
-        public void setOrderStatusChanged(boolean orderStatusChanged) { this.orderStatusChanged = orderStatusChanged; }
-        public boolean isChargeStatusChanged() { return chargeStatusChanged; }
-        public void setChargeStatusChanged(boolean chargeStatusChanged) { this.chargeStatusChanged = chargeStatusChanged; }
-        public boolean isFeeChanged() { return feeChanged; }
-        public void setFeeChanged(boolean feeChanged) { this.feeChanged = feeChanged; }
-        public boolean isTimeChanged() { return timeChanged; }
-        public void setTimeChanged(boolean timeChanged) { this.timeChanged = timeChanged; }
     }
+
+    // 新增：检查自动停止条件
+    private boolean checkAutoStopConditions(ChargeOrder order, ChargeStatusData statusData) {
+        if (order.getStopCondition() == null) return false;
+
+        switch (order.getStopCondition()) {
+            case 1: // 时间控制
+                if (order.getTargetChargeDuration() != null && order.getStartTime() != null) {
+                    long minutes = ChronoUnit.MINUTES.between(order.getStartTime(), LocalDateTime.now());
+                    return minutes >= order.getTargetChargeDuration();
+                }
+                break;
+            case 2: // 电量控制
+                if (order.getTargetSoc() != null && statusData.getSoc() != null) {
+                    return statusData.getSoc().compareTo(order.getTargetSoc()) >= 0;
+                }
+                break;
+            case 3: // 金额控制
+                if (order.getTargetAmount() != null && statusData.getTotalFee() != null) {
+                    return statusData.getTotalFee().compareTo(order.getTargetAmount()) >= 0;
+                }
+                break;
+        }
+        return false;
+    }
+
 }
