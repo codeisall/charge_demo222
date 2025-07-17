@@ -37,6 +37,7 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
     private final UserService userService;
     private final EnergyPlatformService energyPlatformService;
     private final CouponService couponService;
+    private final NotificationService notificationService;
 
     @Override
     @Transactional
@@ -112,7 +113,6 @@ public class ChargeOrderServiceImpl  extends ServiceImpl<ChargeOrderMapper, Char
                 }
 
                 log.info("充电启动请求发送成功，订单号: {}, 平台订单号: {}", order.getOrderNo(), platformOrderNo);
-
             } catch (Exception e) {
                 log.error("调用电能平台启动充电失败", e);
                 // 更新订单状态为异常

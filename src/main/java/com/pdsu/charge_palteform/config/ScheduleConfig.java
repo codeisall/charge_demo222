@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.pdsu.charge_palteform.entity.ChargeOrder;
 import com.pdsu.charge_palteform.entity.platefrom.charge.ChargeStatusData;
 import com.pdsu.charge_palteform.mapper.ChargeOrderMapper;
+import com.pdsu.charge_palteform.service.CouponService;
 import com.pdsu.charge_palteform.service.DataSyncService;
 import com.pdsu.charge_palteform.service.EnergyPlatformService;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +30,8 @@ public class ScheduleConfig {
     private final ChargeOrderMapper chargeOrderMapper;
     private final EnergyPlatformService energyPlatformService;
 
+    private final CouponService couponService;
+
     /**
      * 每天凌晨2点同步充电站基础信息
      */
@@ -40,6 +43,17 @@ public class ScheduleConfig {
             log.info("✅ 定时同步充电站基础信息完成");
         } catch (Exception e) {
             log.error("❌ 定时同步充电站基础信息失败", e);
+        }
+    }
+
+    @Scheduled(cron = "0 0 2 * * ?") // 每天凌晨2点
+    public void expireCoupons() {
+        log.info("开始执行优惠券过期处理...");
+        try {
+            couponService.checkAndExpireCoupons();
+            log.info("优惠券过期处理完成");
+        } catch (Exception e) {
+            log.error("优惠券过期处理失败", e);
         }
     }
 
