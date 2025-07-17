@@ -50,6 +50,19 @@ wechat:
     appid:
     secret:
 
+    templates:
+      charge-start: "充电启动通知模板ID"
+      charge-complete: "充电完成通知模板ID"
+      charge-fault: "充电异常通知模板ID"
+      charge-progress: "充电进度通知模板ID"
+      payment-success: "支付成功通知模板ID"
+
+notification:
+  wechat:
+    enabled: true
+    retry-times: 3
+    template-cache-expire: 3600 # 模板缓存时间(秒)
+
 # JWT配置
 jwt:
   secret: charging_platform_secret_key_123456789
