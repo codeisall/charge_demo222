@@ -70,14 +70,12 @@ public class OrderManagementController {
     public Result<Map<String, Object>> getOrderStatistics() {
         try {
             Map<String, Object> statistics = new HashMap<>();
-
             // 这里可以添加统计逻辑
             statistics.put("totalOrders", 0);
             statistics.put("chargingOrders", 0);
             statistics.put("completedOrders", 0);
             statistics.put("failedOrders", 0);
             statistics.put("lastUpdateTime", System.currentTimeMillis());
-
             return Result.success(statistics);
         } catch (Exception e) {
             return Result.error("获取统计失败: " + e.getMessage());
